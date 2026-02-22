@@ -1,4 +1,4 @@
-# Assignment 1: Transformers
+# Project 3: Language modelling and Transformers
 
 ## Description
 
@@ -35,7 +35,7 @@ Please come talk to us if there is a particular library you would like to try ou
 
 ## Dataset
 
-Dataset is downloaded and split into train and validation for you, check the `data` folder.
+Dataset is downloaded and split into train and validation for you check the `data` folder.
 
 ## Pretrained Models
 
