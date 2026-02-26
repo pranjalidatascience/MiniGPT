@@ -2,9 +2,11 @@
 from functools import partial
 import math
 
+import config
 import torch
 import torch.nn as nn
 from einops import einsum, reduce, rearrange
+import torch.nn.functional as F
 
 
 class BigramLanguageModel(nn.Module):
@@ -26,10 +28,9 @@ class BigramLanguageModel(nn.Module):
 
         super().__init__()
         # ========= TODO : START ========= #
-
-        # self.embeddings = ...
-        # self.linear = ...
-        # self.dropout = ...
+        self.embeddings = nn.Embedding(config.vocab_size, config.embed_dim)
+        self.linear = nn.Linear(config.embed_dim, config.vocab_size, bias=True)
+        self.dropout = nn.Dropout(config.dropout)
 
         # ========= TODO : END ========= #
 
@@ -49,8 +50,19 @@ class BigramLanguageModel(nn.Module):
         """
 
         # ========= TODO : START ========= #
-
-        raise NotImplementedError
+        # B, T = x.shape
+        # tok_emb = self.embeddings(x)  # Shape (B, T, embed_dim)
+        # pos_emb=self.positional_embedding_table(
+        #     torch.arange(T, device=x.device))  # Shape (T, embed_dim)
+        # x = tok_emb + pos_emb  # Add positional embeddings
+        
+        x=self.embeddings(x)  # Shape (B, T, embed_dim)           
+        x=self.dropout(x)
+        logits=self.linear(x)
+        
+        return logits
+        
+        # raise NotImplementedError
 
         # ========= TODO : END ========= #
 
@@ -87,8 +99,30 @@ class BigramLanguageModel(nn.Module):
         """
 
         ### ========= TODO : START ========= ###
-
-        raise NotImplementedError
+        generated =list(context)
+        for _ in range(max_new_tokens):
+            # context_cond=context[:,-1:].unsqueeze(0).to(next(self.parameters()).device)  # Shape (1, seq_len)
+            last_token = generated[-1]
+            logits=self.forward(torch.tensor([generated]))
+            probs=F.softmax(logits[0,-1,:],dim=-1)
+            next_token=torch.multinomial(probs,num_samples=1).item()
+            generated.append(next_token)
+        return generated
+        #     logits, _ =self(context)
+        #     logits=logits[:,-1,:]
+        #     probs=torch.functional.softmax(logits,dim=-1)
+        #     next_token=torch.multinomial(probs,num_samples=1)
+        #     context=torch.cat([context,next_token],dim=1)
+        # return context[:,1:].tolist()[0]
+            # context = torch.tensor(context, dtype=torch.long).unsqueeze(0).to(next(self.parameters()).device)  # Shape (1, seq_len)
+            # generated_tokens = []
+            # for _ in range(max_new_tokens):
+            #     logits = self.forward(context[:, -1:])  # Get logits for the last token
+            #     probs = torch.softmax(logits, dim=-1)  # Convert logits to probabilities
+            #     next_token = torch.multinomial(probs, num_samples=1)  # Sample the next token
+            #     generated_tokens.append(next_token.item())
+            #     context = torch.cat([context, next_token], dim=1)  # Append the new token to the context
+            # return generated_tokens
 
         ### ========= TODO : END ========= ###
 
@@ -139,12 +173,12 @@ class SingleHeadAttention(nn.Module):
 
         # ========= TODO : START ========= #
 
-        # self.key = ...
-        # self.query = ...
-        # self.value = ...
-        # self.dropout = ...
+        self.key = nn.Linear(input_dim, self.output_key_query_dim, bias=False)
+        self.query = nn.Linear(input_dim, self.output_key_query_dim, bias=False)
+        self.value = nn.Linear(input_dim, self.output_value_dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
-        # causal_mask = ...
+        causal_mask = torch.tril(torch.ones((max_len, max_len), dtype=torch.bool))  # Shape (max_len, max_len)
         # ========= TODO : END ========= #
 
         self.register_buffer(
@@ -165,8 +199,29 @@ class SingleHeadAttention(nn.Module):
         """
 
         # ========= TODO : START ========= #
+        
+        batch_size, num_tokens, _ = x.shape
 
-        raise NotImplementedError
+        k = self.key(x)  # Shape (batch_size, num_tokens, output_key_query_dim)
+        q = self.query(x)  # Shape (batch_size, num_tokens, output_key_query_dim)
+        v = self.value(x)  # Shape (batch_size, num_tokens, output_value_dim)
+
+        # Compute attention scores
+        attention_scores = torch.matmul(q, k.transpose(-1, -2)) / (k.shape[-1] ** 0.5)  # Shape (batch_size, num_tokens, num_tokens)
+
+        # Apply causal mask
+        attention_scores = attention_scores.masked_fill(self.causal_mask[:num_tokens, :num_tokens] == 0, float('-inf'))
+
+        # Compute attention weights
+        attention_weights = torch.softmax(attention_scores, dim=-1)  # Shape (batch_size, num_tokens, num_tokens)
+
+        # Apply dropout
+        attention_weights = self.dropout(attention_weights)
+
+        # Compute output
+        output = torch.matmul(attention_weights, v)  # Shape (batch_size, num_tokens, output_value_dim)
+
+        return output
 
         # ========= TODO : END ========= #
 
