@@ -1,1 +1,2 @@
+pretrained_models/best_train_loss_checkpoint.pth filter=lfs diff=lfs merge=lfs -text
 *.pth filter=lfs diff=lfs merge=lfs -text
