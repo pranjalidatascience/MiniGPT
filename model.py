@@ -99,15 +99,35 @@ class BigramLanguageModel(nn.Module):
         """
 
         ### ========= TODO : START ========= ###
-        generated =list(context)
+        if torch.is_tensor(context):
+            generated = context.flatten().tolist()
+        else:
+            generated = list(context)
+            
         for _ in range(max_new_tokens):
-            # context_cond=context[:,-1:].unsqueeze(0).to(next(self.parameters()).device)  # Shape (1, seq_len)
-            last_token = generated[-1]
-            logits=self.forward(torch.tensor([generated]))
-            probs=F.softmax(logits[0,-1,:],dim=-1)
-            next_token=torch.multinomial(probs,num_samples=1).item()
+            # Pass the sequence to the model (Bigram only cares about the last token)
+            # Input shape needs to be (Batch, Seq_len)
+            input_tensor = torch.tensor([generated], device=next(self.parameters()).device)
+            logits = self.forward(input_tensor)
+            
+            # Get the probabilities for the last token
+            probs = F.softmax(logits[0, -1, :], dim=-1)
+            
+            # Sample the next token
+            next_token = torch.multinomial(probs, num_samples=1).item()
             generated.append(next_token)
-        return generated
+            
+        # Return as a tensor so .squeeze().tolist() works in the notebook
+        return torch.tensor(generated)
+        # generated =list(context)
+        # for _ in range(max_new_tokens):
+        #     # context_cond=context[:,-1:].unsqueeze(0).to(next(self.parameters()).device)  # Shape (1, seq_len)
+        #     last_token = generated[-1]
+        #     logits=self.forward(torch.tensor([generated]))
+        #     probs=F.softmax(logits[0,-1,:],dim=-1)
+        #     next_token=torch.multinomial(probs,num_samples=1).item()
+        #     generated.append(next_token)
+        # return generated
         #     logits, _ =self(context)
         #     logits=logits[:,-1,:]
         #     probs=torch.functional.softmax(logits,dim=-1)
@@ -172,13 +192,14 @@ class SingleHeadAttention(nn.Module):
         causal_mask = None  # You have to implement this, currently just a placeholder
 
         # ========= TODO : START ========= #
-
         self.key = nn.Linear(input_dim, self.output_key_query_dim, bias=False)
         self.query = nn.Linear(input_dim, self.output_key_query_dim, bias=False)
         self.value = nn.Linear(input_dim, self.output_value_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        causal_mask = torch.tril(torch.ones((max_len, max_len), dtype=torch.bool))  # Shape (max_len, max_len)
+        # Use torch.triu (upper triangular) for the causal mask as requested in docstrings.
+        # diagonal=1 ensures we don't mask the current token itself.
+        causal_mask = torch.triu(torch.ones((max_len, max_len), dtype=torch.bool), diagonal=1)
         # ========= TODO : END ========= #
 
         self.register_buffer(
@@ -199,30 +220,26 @@ class SingleHeadAttention(nn.Module):
         """
 
         # ========= TODO : START ========= #
-        
         batch_size, num_tokens, _ = x.shape
 
-        k = self.key(x)  # Shape (batch_size, num_tokens, output_key_query_dim)
-        q = self.query(x)  # Shape (batch_size, num_tokens, output_key_query_dim)
-        v = self.value(x)  # Shape (batch_size, num_tokens, output_value_dim)
+        k = self.key(x) 
+        q = self.query(x)
+        v = self.value(x)
 
-        # Compute attention scores
-        attention_scores = torch.matmul(q, k.transpose(-1, -2)) / (k.shape[-1] ** 0.5)  # Shape (batch_size, num_tokens, num_tokens)
+        # Calculate attention scores with proper scaling
+        # Use math.sqrt for precision consistent with standard transformer implementations
+        attention_scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(k.shape[-1])
 
-        # Apply causal mask
-        attention_scores = attention_scores.masked_fill(self.causal_mask[:num_tokens, :num_tokens] == 0, float('-inf'))
+        # Apply causal mask: mask positions where the upper triangular mask is True (1)
+        # These are the "future" tokens that should be invisible to the current token.
+        attention_scores = attention_scores.masked_fill(self.causal_mask[:num_tokens, :num_tokens], float('-inf'))
 
-        # Compute attention weights
-        attention_weights = torch.softmax(attention_scores, dim=-1)  # Shape (batch_size, num_tokens, num_tokens)
-
-        # Apply dropout
+        # Standard softmax, dropout, and value multiplication
+        attention_weights = torch.softmax(attention_scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
-
-        # Compute output
-        output = torch.matmul(attention_weights, v)  # Shape (batch_size, num_tokens, output_value_dim)
+        output = torch.matmul(attention_weights, v)
 
         return output
-
         # ========= TODO : END ========= #
 
 
