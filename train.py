@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.utils
 from torch.utils.data import DataLoader
 from einops import rearrange
-import wandb
+# import wandb
 
 from model import BigramLanguageModel, MiniGPT
 from dataset import TinyStoriesDataset
@@ -29,8 +29,8 @@ else:
 
 
 # Initialize wandb if you want to use it
-if config.to_log:
-    wandb.init(project="dl2_proj3")
+# if config.to_log:
+#     wandb.init(project="dl2_proj3")
 
 
 def count_parameters(model):
@@ -78,24 +78,29 @@ The MiniGPT config has params that you do not need to use, these were added to s
 not a required part of the assignment. 
 Feel free to experiment with the parameters and I would be happy to talk to you about them if interested :)
 """
+import matplotlib.pyplot as plt
 
-# Move model to device (GPU or CPU)
+# 1. Setup device and move model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-# 1. Define Loss Function and Optimizer
-# CrossEntropyLoss expects (Batch, Vocab_Size, Seq_Len) for multidimensional inputs
+# 2. Define Loss Function and Optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate if hasattr(config, 'learning_rate') else 3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
-# Training loop variables
+# Lists to store metrics for plotting
+train_losses = []
+val_losses = []
+iter_list = []
+
 iter_num = 0
-best_train_loss = float('inf')
-
 model.train()
 
-# Standard training loop over iterations
+print(f"Starting training for {MODEL} on {device}...")
+
+# 3. Training Loop
 while iter_num < config.max_iter:
-    for batch_idx, (x, y) in enumerate(train_dataloader):
+    for x, y in train_dataloader:
         if iter_num >= config.max_iter:
             break
             
@@ -104,9 +109,7 @@ while iter_num < config.max_iter:
         # Forward pass
         logits = model(x)
         
-        # Reshape logits and targets for CrossEntropyLoss
-        # Logits: (B, T, V) -> (B*T, V)
-        # Targets: (B, T) -> (B*T)
+        # Reshape for CrossEntropyLoss (B, T, V) -> (B*T, V)
         B, T, V = logits.shape
         loss = criterion(logits.view(B * T, V), y.view(B * T))
         
@@ -114,34 +117,42 @@ while iter_num < config.max_iter:
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         
-        # Optional: Gradient clipping if set in config
         if config.to_clip_grad:
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
             
         optimizer.step()
         
-        # 2. Logging
+        # 4. Periodic Logging & Validation
         if iter_num % config.log_interval == 0:
-            print(f"iter {iter_num}: loss {loss.item():.4f}")
-            if config.to_log:
-                wandb.log({"train_loss": loss.item(), "iter": iter_num})
-                
-        # 3. Save Model with Best Training Loss
-        if loss.item() < best_train_loss:
-            best_train_loss = loss.item()
-            if iter_num > 0: # Avoid saving at the very first iteration
-                checkpoint = {
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': best_train_loss,
-                    'iter': iter_num,
-                }
-                torch.save(checkpoint, config.save_path / "best_model.pt")
+            # Track training loss
+            train_losses.append(loss.item())
+            iter_list.append(iter_num)
+            
+            # Optional: Calculate Validation Loss
+            model.eval()
+            with torch.no_grad():
+                # Get one batch from val_dataloader
+                val_x, val_y = next(iter(val_dataloader))
+                val_x, val_y = val_x.to(device), val_y.to(device)
+                val_logits = model(val_x)
+                vB, vT, vV = val_logits.shape
+                v_loss = criterion(val_logits.view(vB * vT, vV), val_y.view(vB * vT))
+                val_losses.append(v_loss.item())
+            model.train()
 
-        # Optional: Save every config.save_iterations
-        if iter_num % config.save_iterations == 0 and iter_num > 0:
-            torch.save({'model_state_dict': model.state_dict()}, config.save_path / f"model_iter_{iter_num}.pt")
+            print(f"Iter {iter_num}: Train Loss {loss.item():.4f} | Val Loss {v_loss.item():.4f}")
 
         iter_num += 1
 
-print(f"Training completed. Best loss: {best_train_loss:.4f}")
+# 5. Save the final plot locally
+plt.figure(figsize=(10, 5))
+plt.plot(iter_list, train_losses, label='Train Loss')
+plt.plot(iter_list, val_losses, label='Val Loss')
+plt.xlabel('Iterations')
+plt.ylabel('Loss')
+plt.title(f'{MODEL} Training and Validation Loss')
+plt.legend()
+plt.savefig(config.save_path / 'loss_curve.png')
+plt.show()
+
+print(f"Training finished. Plot saved to {config.save_path}/loss_curve.png")
