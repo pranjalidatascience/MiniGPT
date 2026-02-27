@@ -18,7 +18,7 @@ class BigramConfig:
     embed_dim: int = 32
     dropout: float = 0.1
     save_iterations: int = 10000
-    max_iter: int = 500000
+    max_iter: int = 5000
 
 
 @dataclass
@@ -48,7 +48,7 @@ class MiniGPTConfig:
     save_path: Path = Path("models/minigpt/")
     save_iterations: int = 10000
     to_log: bool = True
-    max_iter: int = 500000
+    max_iter: int = 5000
     to_clip_grad: bool = False
     gradient_clip: float = 1.0
     scheduler: bool = False

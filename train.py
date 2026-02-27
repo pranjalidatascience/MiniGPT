@@ -9,6 +9,10 @@ import torch.nn as nn
 import torch.nn.utils
 from torch.utils.data import DataLoader
 from einops import rearrange
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import json
 # import wandb
 
 from model import BigramLanguageModel, MiniGPT
@@ -16,7 +20,7 @@ from dataset import TinyStoriesDataset
 from config import BigramConfig, MiniGPTConfig
 
 
-MODEL = "bigram"  # bigram or minigpt
+MODEL = "minigpt"  # bigram or minigpt
 
 if MODEL == "bigram":
     config = BigramConfig
@@ -78,81 +82,60 @@ The MiniGPT config has params that you do not need to use, these were added to s
 not a required part of the assignment. 
 Feel free to experiment with the parameters and I would be happy to talk to you about them if interested :)
 """
-import matplotlib.pyplot as plt
-
-# 1. Setup device and move model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-# 2. Define Loss Function and Optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+# Using a fallback if learning_rate is missing from config
+lr = getattr(config, 'learning_rate', 3e-3)
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
-# Lists to store metrics for plotting
 train_losses = []
 val_losses = []
-iter_list = []
+steps = []
 
 iter_num = 0
 model.train()
 
-print(f"Starting training for {MODEL} on {device}...")
+print(f"Starting training on {device}...")
 
-# 3. Training Loop
 while iter_num < config.max_iter:
     for x, y in train_dataloader:
-        if iter_num >= config.max_iter:
-            break
-            
-        x, y = x.to(device), y.to(device)
+        if iter_num >= config.max_iter: break
         
-        # Forward pass
+        x, y = x.to(device), y.to(device)
         logits = model(x)
         
-        # Reshape for CrossEntropyLoss (B, T, V) -> (B*T, V)
+        # Reshape for CrossEntropy
         B, T, V = logits.shape
         loss = criterion(logits.view(B * T, V), y.view(B * T))
         
-        # Backward pass
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        
-        if config.to_clip_grad:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
-            
         optimizer.step()
         
-        # 4. Periodic Logging & Validation
+        # Log and Validate
         if iter_num % config.log_interval == 0:
-            # Track training loss
+            steps.append(iter_num)
             train_losses.append(loss.item())
-            iter_list.append(iter_num)
             
-            # Optional: Calculate Validation Loss
+            # Simple Val Loss check
             model.eval()
             with torch.no_grad():
-                # Get one batch from val_dataloader
-                val_x, val_y = next(iter(val_dataloader))
-                val_x, val_y = val_x.to(device), val_y.to(device)
-                val_logits = model(val_x)
-                vB, vT, vV = val_logits.shape
-                v_loss = criterion(val_logits.view(vB * vT, vV), val_y.view(vB * vT))
+                vx, vy = next(iter(eval_dataloader))
+                vx, vy = vx.to(device), vy.to(device)
+                v_logits = model(vx)
+                v_loss = criterion(v_logits.view(-1, v_logits.size(-1)), vy.view(-1))
                 val_losses.append(v_loss.item())
             model.train()
-
+            
             print(f"Iter {iter_num}: Train Loss {loss.item():.4f} | Val Loss {v_loss.item():.4f}")
-
+            
         iter_num += 1
 
-# 5. Save the final plot locally
-plt.figure(figsize=(10, 5))
-plt.plot(iter_list, train_losses, label='Train Loss')
-plt.plot(iter_list, val_losses, label='Val Loss')
-plt.xlabel('Iterations')
-plt.ylabel('Loss')
-plt.title(f'{MODEL} Training and Validation Loss')
-plt.legend()
-plt.savefig(config.save_path / 'loss_curve.png')
-plt.show()
+# Save data for the Notebook to use
+history = {"steps": steps, "train": train_losses, "val": val_losses}
+with open("loss_history.json", "w") as f:
+    json.dump(history, f)
 
-print(f"Training finished. Plot saved to {config.save_path}/loss_curve.png")
+print("Training complete. Data saved to loss_history.json")
