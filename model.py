@@ -1,6 +1,7 @@
 ## Building and training a bigram language model
 from functools import partial
 import math
+from multiprocessing import context
 
 import config
 import torch
@@ -267,11 +268,22 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
 
         # ========= TODO : START ========= #
+        # Each head handles a fraction of the total embedding dimension
+        head_dim = input_dim // num_heads
 
-        # self.head_{i} = ... # Use setattr to implement this dynamically, this is used as a placeholder
-        # self.out = ...
-        # self.dropout = ...
+        # Dynamically create the heads (head_0, head_1, etc.)
+        for i in range(num_heads):
+            # Crucial: Specify output_key_query_dim and output_value_dim as head_dim
+            setattr(self, f"head_{i}", SingleHeadAttention(
+                input_dim=input_dim,
+                output_key_query_dim=head_dim,
+                output_value_dim=head_dim,
+                dropout=dropout
+            ))
 
+        # Final projection layer (set bias=True per docstring)
+        self.out = nn.Linear(input_dim, input_dim, bias=True)
+        self.dropout = nn.Dropout(dropout)
         # ========= TODO : END ========= #
 
     def forward(self, x):
@@ -288,8 +300,19 @@ class MultiHeadAttention(nn.Module):
         """
 
         # ========= TODO : START ========= #
-
-        raise NotImplementedError
+        # 1. Run each head independently and collect outputs
+        # Each head output shape: (batch_size, num_tokens, head_dim)
+        head_outputs = [getattr(self, f"head_{i}")(x) for i in range(self.num_heads)]
+        
+        # 2. Concatenate head outputs along the feature dimension
+        # Result shape: (batch_size, num_tokens, input_dim)
+        out = torch.cat(head_outputs, dim=-1)
+        
+        # 3. Final projection and dropout
+        out = self.out(out)
+        out = self.dropout(out)
+        
+        return out
 
         # ========= TODO : END ========= #
 
@@ -318,11 +341,10 @@ class FeedForwardLayer(nn.Module):
 
         # ========= TODO : START ========= #
 
-        # self.fc1 = ...
-        # self.activation = ...
-        # self.fc2 = ...
-        # self.fc2 = ...
-        # self.dropout = ...
+        self.fc1 = nn.Linear(input_dim, feedforward_dim, bias=True)
+        self.activation = nn.GELU()
+        self.fc2 = nn.Linear(feedforward_dim, input_dim, bias=True)
+        self.dropout = nn.Dropout(dropout)
 
         # ========= TODO : END ========= #
 
@@ -341,7 +363,12 @@ class FeedForwardLayer(nn.Module):
 
         ### ========= TODO : START ========= ###
 
-        raise NotImplementedError
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = self.fc2(x)
+        x = self.dropout(x)
+
+        return x
 
         ### ========= TODO : END ========= ###
 
@@ -379,7 +406,12 @@ class LayerNorm(nn.Module):
 
         # ========= TODO : START ========= #
 
-        raise NotImplementedError
+        mean = input.mean(dim=-1, keepdim=True)
+        var = input.var(dim=-1, keepdim=True, unbiased=False)
+        normalized_input = (input - mean) / torch.sqrt(var + self.eps)  
+        if self.elementwise_affine:
+            normalized_input = normalized_input * self.gamma + self.beta
+        return normalized_input
 
         # ========= TODO : END ========= #
 
@@ -406,10 +438,10 @@ class TransformerLayer(nn.Module):
 
         # ========= TODO : START ========= #
 
-        # self.norm1 = ...
-        # self.attention = ...
-        # self.norm2 = ...
-        # self.feedforward = ...
+        self.norm1 = LayerNorm(input_dim)
+        self.attention = MultiHeadAttention(input_dim, num_heads)
+        self.norm2 = LayerNorm(input_dim)
+        self.feedforward = FeedForwardLayer(input_dim, input_dim * 4)
 
         # ========= TODO : END ========= #
 
@@ -428,7 +460,10 @@ class TransformerLayer(nn.Module):
 
         # ========= TODO : START ========= #
 
-        raise NotImplementedError
+        # Prenorm: Normalize before attention and feedforward
+        x = x + self.attention(self.norm1(x))  # Attention with residual connection
+        x = x + self.feedforward(self.norm2(x))  # Feedforward with residual connection 
+        return x
 
         # ========= TODO : END ========= #
 
@@ -504,7 +539,28 @@ class MiniGPT(nn.Module):
 
         ### ========= TODO : START ========= ###
 
-        raise NotImplementedError
+        batch_size, seq_len = x.shape
+        
+        # 1. Create Token and Positional Embeddings
+        # tok_emb shape: (Batch, Seq_Len, Embed_Dim)
+        tok_emb = self.vocab_embedding(x) 
+        
+        # Use the pre-registered 'pos' buffer for positional indices
+        # pos_emb shape: (Seq_Len, Embed_Dim)
+        pos_emb = self.positional_embedding(self.pos[:seq_len]) 
+        
+        # 2. Combine embeddings and apply dropout
+        x = self.embed_dropout(tok_emb + pos_emb)
+        
+        # 3. Pass through the stack of Transformer layers
+        for layer in self.transformer_layers:
+            x = layer(x)
+            
+        # 4. Apply final layer normalization and the LM head
+        x = self.prehead_norm(x)
+        logits = self.head(x) # (Batch, Seq_Len, Vocab_Size)
+        
+        return logits
 
         ### ========= TODO : END ========= ###
 
@@ -536,7 +592,37 @@ class MiniGPT(nn.Module):
         """
 
         ### ========= TODO : START ========= ###
+        if not torch.is_tensor(context):
+            generated = torch.tensor([context], dtype=torch.long, device=next(self.parameters()).device)
+        else:
+            generated = context.clone().detach().to(next(self.parameters()).device)
+            if generated.dim() == 1:
+                generated = generated.unsqueeze(0)
 
-        raise NotImplementedError
+        # 2. Generation Loop
+        for _ in range(max_new_tokens):
+            # CROP THE CONTEXT: 
+            # We must not exceed the context_length defined during initialization.
+            # We access it via the model's own config attribute or the block_size.
+            # Assuming you have self.positional_embedding, we can use its weight size.
+            max_len = self.positional_embedding.weight.shape[0]
+            context_cond = generated[:, -max_len:]
+            
+            # Forward pass 
+            logits = self.forward(context_cond)
+            
+            # Focus only on the last time step: (B, T, V) -> (B, V)
+            logits = logits[:, -1, :]
+            
+            # Apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1)
+            
+            # Sample the next token
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            # Append to the sequence
+            generated = torch.cat((generated, next_token), dim=1)
+            
+        return generated[0]
 
         ### ========= TODO : END ========= ###
